@@ -1,0 +1,89 @@
+#!/usr/bin/env python
+
+
+from twisted.internet.protocol import DatagramProtocol
+from twisted.internet import protocol,reactor
+from twisted.internet.task import LoopingCall
+from time import ctime
+import time
+from sys import stdout,exit
+import signal
+
+HOST='192.168.122.226'
+PORT=8006
+
+SEND_INTERVAL=2
+DEAD_TIME=10
+
+
+def signal_handler(signum,frame):
+	reactor.stop()
+	exit()
+
+signal.signal(signal.SIGINT,signal_handler)
+
+
+################################UDP Server############################################
+class UdpServer(DatagramProtocol):
+	def __init__(self,host,port):
+		self.host=host
+		self.port=port
+		self.tick=0
+		self.heartbeat=0
+		self.count=0
+		self.flag = True
+	
+	def startProtocol(self):
+
+		self.count_loop=LoopingCall(self.clock)
+		self.hb_loop=LoopingCall(self.sendHeartBeat)
+		self.hb_loop.start(SEND_INTERVAL,now=False)
+		self.check_loop=LoopingCall(self.checkHeartBeat)
+		
+		stdout.write('[%s] start heartbeat\n'%ctime())
+		stdout.write('[%s] waiting for %s:%d to send heartbeat\n' % (ctime(),self.host,self.port))
+
+	def datagramReceived(self,data,(host,port)):
+
+		if self.count < 5:
+			stdout.write('[%s] receive %s from %s:%d\n' % (ctime(),data,host,port))
+			self.count += 1
+		else:
+			if self.flag : 
+				self.count_loop.start(1,now=False)
+				self.check_loop.start(1,now=False)
+				try:
+					self.hb_loop.start(SEND_INTERVAL,now=False)
+				except AssertionError:
+					pass
+				self.flag = False
+			stdout.write('[%s] receive %s from %s:%d\n' % (ctime(),data,host,port))
+			self.heartbeat += SEND_INTERVAL 
+
+	def sendHeartBeat(self):
+
+		if not self.flag :
+			stdout.write('[%s] send heartbeat to %s:%d\n' % (ctime(),self.host,self.port))
+		self.transport.write('heartbeat',(self.host,self.port))
+
+	def checkHeartBeat(self):
+
+		if (self.tick - self.heartbeat) < DEAD_TIME :
+			#stdout.write('[%s] %s seems good\n'%(ctime(),self.host))
+			pass
+		else:
+			stdout.write('[%s] can not received heartbeat from %s after %s seconds\n' %(ctime(),self.host,DEAD_TIME))
+			stdout.write('[%s] so i think %s is unusable\n' %(ctime(),self.host))
+			stdout.write('[%s] and i will takeover all the resources from %s\n' %(ctime(),self.host))
+			self.count_loop.stop()
+			self.hb_loop.stop()
+			self.check_loop.stop()
+			self.tick=0
+			self.heartbeat=0
+			self.count=0
+			self.flag=True
+	def clock(self):
+		self.tick += 1 
+############################################Main Section####################################
+reactor.listenUDP(PORT,UdpServer(HOST,PORT))
+reactor.run()

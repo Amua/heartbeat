@@ -1,0 +1,123 @@
+#!/usr/bin/env python
+
+
+from twisted.internet.protocol import DatagramProtocol
+from twisted.internet import protocol,reactor
+from twisted.internet.task import LoopingCall
+from time import ctime
+import time
+from sys import stdout,exit
+import signal
+
+HOST='192.168.122.226'
+PORT=8006
+
+SEND_INTERVAL=2
+DEAD_TIME=10
+
+
+def signal_handler(signum,frame):
+	reactor.stop()
+	exit()
+
+signal.signal(signal.SIGINT,signal_handler)
+
+###############################TCP Client#######################################
+class Client(protocol.Protocol):
+	def sendData(self):
+		self.transport.write('hello')
+	
+	#def connectionMade(self):
+	#		stdout.write('connected\n')
+	#		self.sendData()
+	#		self.factory.first_connect = True
+	def dataReceived(self,data):
+		pass
+
+class ClientFactory(protocol.ClientFactory):
+	def __init__(self,host,port):
+		self.host=host
+		self.port=port
+		self.first_connect=True
+
+	def startedConnecting(self,connector):
+		stdout.write('[%s] connect to server %s:%d ' % (ctime(),self.host,self.port))
+
+	def buildProtocol(self,addr):
+		stdout.write('connected\n')
+		self.first_connect=False
+		return Client()
+
+	def clientConnectionLost(self,connector,reason):
+		stdout.write('failed\n')
+		time.sleep(3)
+		if self.first_connect:
+			connector.connect()
+	def clientConnectionFailed(self,connector,reason):
+		stdout.write('failed\n')
+		time.sleep(3)
+		if self.first_connect:
+			connector.connect()
+
+
+###############################TCP Server#####################################
+class TcpServer(protocol.Protocol):
+	def connectionMade(self):
+		clnt=self.transport.getPeer().host
+		stdout.write('[%s] connected from %s\n' % (ctime(),clnt))
+		global port
+		port=reactor.listenUDP(PORT,UdpServer(HOST,PORT))
+
+	def dataReceived(self,data):
+		self.transport.write('[%s] %s'%(ctime(),data))
+		stdout.write('[%s] %s said %s\n'%(ctime(),self.transport.getPeer().host,data))
+		#if data == 'hello':
+		#self.factory.stopListening()
+
+################################UDP Server############################################
+class UdpServer(DatagramProtocol):
+	def __init__(self,host,port):
+		self.host=host
+		self.port=port
+		self.tick=0
+		self.heartbeat=0
+	
+	def startProtocol(self):
+
+		self.loop1=LoopingCall(self.clock)
+		self.loop1.start(1,now=False)
+
+		self.loop2=LoopingCall(self.sendHeartBeat)
+		self.loop2.start(SEND_INTERVAL,now=False)
+
+		self.loop3=LoopingCall(self.checkHeartBeat)
+		self.loop3.start(DEAD_TIME,now=False)
+
+	def datagramReceived(self,data,(host,port)):
+		stdout.write('[%s] received %r from %s:%d\n' % (ctime(),data,host,port))
+		self.heartbeat += SEND_INTERVAL 
+
+	def sendHeartBeat(self):
+		stdout.write('[%s] send heartbeat to %s:%d\n' % (ctime(),self.host,self.port))
+		self.transport.write('heartbeat',(self.host,self.port))
+
+	def checkHeartBeat(self):
+		if (self.tick - self.heartbeat) < DEAD_TIME :
+			#stdout.write('[%s] %s seems good\n'%(ctime(),self.host))
+		else:
+			stdout.write('[%s] %s seems bad\n' %(ctime(),self.host))
+			self.loop1.stop()
+			self.loop2.stop()
+			self.loop3.stop()
+			
+	def clock(self):
+		self.tick += 1 
+############################################Main Section####################################
+		
+ServerFactory=protocol.Factory()
+ServerFactory.protocol=TcpServer
+stdout.write('[%s] waiting for connection...\n' % ctime())
+tcplisten=reactor.listenTCP(PORT,ServerFactory)
+
+reactor.connectTCP(HOST,PORT,ClientFactory(HOST,PORT))
+reactor.run()
